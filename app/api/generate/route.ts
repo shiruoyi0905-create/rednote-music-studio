@@ -11,7 +11,11 @@ import {
   parseCopyOnly,
   parseMetaTitles,
 } from "@/lib/parse";
-import type { GenerateApiResponse, GeneratedContent } from "@/lib/types";
+import type {
+  CreatorBrief,
+  GenerateApiResponse,
+  GeneratedContent,
+} from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +25,7 @@ type GeneratePart = "all" | "titles" | "copy";
 type RequestBody = {
   prompt?: string;
   part?: GeneratePart;
+  brief?: CreatorBrief;
   current?: Pick<
     GeneratedContent,
     "song" | "artist" | "mood" | "titles" | "copy"
@@ -38,11 +43,12 @@ async function generateTitles(apiKey: string, userPrompt: string) {
 async function generateCopy(
   apiKey: string,
   rawInput: string,
+  brief?: CreatorBrief,
   ctx?: { song: string; artist: string; mood: string }
 ) {
   const copyPrompt = ctx
-    ? buildCopyContextPrompt(rawInput, ctx)
-    : buildUserPrompt(rawInput);
+    ? buildCopyContextPrompt(rawInput, ctx, brief)
+    : buildUserPrompt(rawInput, brief);
   const copyRaw = await chatDeepSeek(apiKey, COPY_PROMPT, copyPrompt, {
     maxTokens: 650,
     temperature: 0.75,
@@ -53,11 +59,12 @@ async function generateCopy(
 async function generateParallel(
   apiKey: string,
   rawInput: string,
-  userPrompt: string
+  userPrompt: string,
+  brief?: CreatorBrief
 ): Promise<GeneratedContent> {
   const [meta, copy] = await Promise.all([
     generateTitles(apiKey, userPrompt),
-    generateCopy(apiKey, rawInput),
+    generateCopy(apiKey, rawInput, brief),
   ]);
   return mergeGenerated(meta, copy);
 }
@@ -65,13 +72,14 @@ async function generateParallel(
 async function generateWithRetry(
   apiKey: string,
   rawInput: string,
-  userPrompt: string
+  userPrompt: string,
+  brief?: CreatorBrief
 ): Promise<GeneratedContent> {
   try {
-    return await generateParallel(apiKey, rawInput, userPrompt);
+    return await generateParallel(apiKey, rawInput, userPrompt, brief);
   } catch {
     const meta = await generateTitles(apiKey, userPrompt);
-    const copy = await generateCopy(apiKey, rawInput);
+    const copy = await generateCopy(apiKey, rawInput, brief);
     return mergeGenerated(meta, copy);
   }
 }
@@ -104,7 +112,8 @@ export async function POST(request: NextRequest) {
   }
 
   const part: GeneratePart = body.part ?? "all";
-  const userPrompt = buildUserPrompt(userInput);
+  const brief = body.brief;
+  const userPrompt = buildUserPrompt(userInput, brief);
 
   try {
     if (part === "titles") {
@@ -119,6 +128,7 @@ export async function POST(request: NextRequest) {
       const copy = await generateCopy(
         apiKey,
         userInput,
+        brief,
         ctx
           ? { song: ctx.song, artist: ctx.artist, mood: ctx.mood }
           : undefined
@@ -135,7 +145,7 @@ export async function POST(request: NextRequest) {
       return Response.json({ data } satisfies GenerateApiResponse);
     }
 
-    const data = await generateWithRetry(apiKey, userInput, userPrompt);
+    const data = await generateWithRetry(apiKey, userInput, userPrompt, brief);
     return Response.json({ data } satisfies GenerateApiResponse);
   } catch (error) {
     const message =
